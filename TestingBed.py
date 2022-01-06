@@ -1,8 +1,10 @@
 #!/usr/bin/python
+import re
 
 import cv2
 import sys
 import numpy as np
+import pytesseract
 
 PREVIEW = 0
 CANNY = 1
@@ -127,6 +129,13 @@ while alive:
                 textStartFound = True
 
     statusLineImg = curFrame[textTop:textBottom, points[0]:points[2]]
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    tessConfig = "-l eng --oem 1 --psm 7"
+    statusText = pytesseract.image_to_string(statusLineImg, config=tessConfig)
+    match = re.search(r'flows:\s*([0-9]+)/\s*([0-9]+)\s', statusText)
+
+    curFlowCount = int(match.group(1))
+    goalFlowCount = int(match.group(2))
 
     if image_filter == STATUS_TEXT:
         result = statusLineImg
@@ -142,15 +151,18 @@ while alive:
         cv2.circle(circleImage, (int(circle[0] + gridBounds[0]), int(circle[1] + gridBounds[1])), int(circle[2]),
                    (0, 255, 255), 3)
 
+    assert len(circles[0]) == (goalFlowCount * 2)
+
     if image_filter == CIRCLES:
         result = circleImage
 
     winRect = cv2.getWindowImageRect(win_name)
     resizedResult = resizeAndPad(result, (winRect[2], winRect[3]))
-    cv2.putText(resizedResult, str(accumThresh) + " " + str(uThresh) + " " + str(sWindow), (10, 50),
-                cv2.FONT_HERSHEY_PLAIN,
-                3,
-                (255, 0, 0))
+    if image_filter == STATUS_TEXT:
+        cv2.putText(resizedResult, statusText, (10, 50),
+                    cv2.FONT_HERSHEY_PLAIN,
+                    3,
+                    (255, 0, 0))
 
     cv2.imshow(win_name, resizedResult)
 
