@@ -11,9 +11,10 @@ CANNY = 1
 GRID_BOUNDS = 2
 CIRCLES = 3
 STATUS_TEXT = 4
+TOP_TEXT = 5
 
 
-def findBiggestContour(contours):
+def find_biggest_contour(contours):
     maxArea = 0
     cntIdx = -1
     for i, contour in enumerate(contours):
@@ -26,7 +27,30 @@ def findBiggestContour(contours):
     return cntIdx, bestCnt
 
 
-def resizeAndPad(img, size, padColor=0):
+def find_start_and_end_of_white(img, startLine, searchReverse=False, searchRows=True):
+    textStartFound = False
+    firstWhite = -1
+    changeToNonWhite = -1
+    numLines = img.shape[0] if searchRows else img.shape[1]
+    numLinesToSearch = numLines - startLine if not searchReverse else startLine
+    for i in range(numLinesToSearch):
+        lineIndex = startLine + i if not searchReverse else startLine - i
+        lineHasWhite = (255 in img[lineIndex, :]) if searchRows else (255 in img[:, lineIndex])
+        if textStartFound:
+            if not lineHasWhite:
+                changeToNonWhite = lineIndex
+                break
+        else:
+            if lineHasWhite:
+                firstWhite = lineIndex
+                textStartFound = True
+    if not searchReverse:
+        return firstWhite, changeToNonWhite
+    else:
+        return changeToNonWhite, firstWhite
+
+
+def resize_and_pad(img, size, padColor=0):
     h, w = img.shape[:2]
     sh, sw = size
 
@@ -91,6 +115,7 @@ frame = cv2.imread(r'C:\Users\final\Pictures\gridTest.png')
 uThresh = 150
 sWindow = 3
 accumThresh = 35
+ttThresh = 50
 
 while alive:
     curFrame = frame.copy()
@@ -101,10 +126,10 @@ while alive:
     if image_filter == CANNY:
         result = canny
     contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    biggestContourIndex, biggestContour = findBiggestContour(contours)
+    biggestContourIndex, biggestContour = find_biggest_contour(contours)
     cv2.drawContours(canny, contours, -1, (255, 255, 255), 3)
     contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    biggestContourIndex, biggestContour = findBiggestContour(contours)
+    biggestContourIndex, biggestContour = find_biggest_contour(contours)
 
     gridBounds = cv2.boundingRect(biggestContour)
     points = [gridBounds[0], gridBounds[1], gridBounds[0] + gridBounds[2], gridBounds[1] + gridBounds[3]]
@@ -115,20 +140,8 @@ while alive:
     if image_filter == GRID_BOUNDS:
         result = contourImage
 
-    textStartFound = False
-    for i in range(gridBounds[1] - 1):
-        lineIndex = gridBounds[1] - i - 1
-        lineHasWhite = 255 in canny[lineIndex, :]
-        if textStartFound:
-            if not lineHasWhite:
-                textTop = lineIndex
-                break
-        else:
-            if lineHasWhite:
-                textBottom = lineIndex - 1
-                textStartFound = True
-
-    statusLineImg = curFrame[textTop:textBottom, points[0]:points[2]]
+    textTop, textBottom = find_start_and_end_of_white(canny, gridBounds[1] - 1, searchReverse=True)
+    statusLineImg = curFrame[textTop - 1:textBottom + 1, points[0]:points[2]]
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     tessConfig = "-l eng --oem 1 --psm 7"
     statusText = pytesseract.image_to_string(statusLineImg, config=tessConfig)
@@ -140,29 +153,58 @@ while alive:
     if image_filter == STATUS_TEXT:
         result = statusLineImg
 
+    topTextTop, topTextBottom = find_start_and_end_of_white(canny, 0)
+    topTextImg = curFrame[topTextTop - 1:topTextBottom + 1, points[0]:points[2]]
+    leftCircleLeft, leftCircleRight = find_start_and_end_of_white(topTextImg, 0, searchRows=False)
+    rightCircleLeft, rightCircleRight = find_start_and_end_of_white(topTextImg, topTextImg.shape[1] - 1,
+                                                                    searchReverse=True,
+                                                                    searchRows=False)
+    topTextImg = topTextImg[:, leftCircleRight + 5:rightCircleLeft - 5]
+    topTextImg = cv2.cvtColor(topTextImg, cv2.COLOR_BGR2GRAY)
+    thresh, topTextImg = cv2.threshold(topTextImg, ttThresh, 255, cv2.THRESH_BINARY)
+    tessConfig = "-l eng --oem 1 --psm 13"
+    topText = pytesseract.image_to_string(topTextImg, config=tessConfig)
+    match = re.search(r'level\s*([0-9]+)\s*([0-9]+)x([0-9]+)', topText)
+
+    curLevel = int(match.group(1))
+    curLevelWidth = int(match.group(2))
+    curLevelHeight = int(match.group(3))
+
+    if image_filter == TOP_TEXT:
+        result = topTextImg
+
     gridArea = cv2.cvtColor(curFrame[points[1]:points[3], points[0]:points[2]], cv2.COLOR_BGR2GRAY)
     minRadius = min(gridBounds[2], gridBounds[3]) // 31
     maxRadius = minRadius * 32 // 9
     circles = cv2.HoughCircles(gridArea, cv2.HOUGH_GRADIENT, 1, minRadius * 2, param1=150, param2=accumThresh,
                                minRadius=minRadius,
                                maxRadius=maxRadius)
+    circles = circles[0]
     circleImage = np.stack((canny,) * 3, axis=-1)
-    for circle in circles[0]:
+    for circle in circles:
         cv2.circle(circleImage, (int(circle[0] + gridBounds[0]), int(circle[1] + gridBounds[1])), int(circle[2]),
                    (0, 255, 255), 3)
 
-    assert len(circles[0]) == (goalFlowCount * 2)
+    assert len(circles) == (goalFlowCount * 2)
 
     if image_filter == CIRCLES:
         result = circleImage
 
     winRect = cv2.getWindowImageRect(win_name)
-    resizedResult = resizeAndPad(result, (winRect[2], winRect[3]))
+    resizedResult = resize_and_pad(result, (winRect[2], winRect[3]))
     if image_filter == STATUS_TEXT:
-        cv2.putText(resizedResult, statusText, (10, 50),
+        cv2.putText(resizedResult, "flows:" + str(curFlowCount) + "/" + str(goalFlowCount), (10, 50),
                     cv2.FONT_HERSHEY_PLAIN,
                     3,
                     (255, 0, 0))
+    elif image_filter == TOP_TEXT:
+        cv2.putText(resizedResult, "level " + str(curLevel) + ": " + str(curLevelWidth) + "x" + str(curLevelHeight),
+                    (10, 50),
+                    cv2.FONT_HERSHEY_PLAIN,
+                    3,
+                    (255, 0, 0))
+    elif image_filter == CIRCLES:
+        cv2.putText(resizedResult, "found " + str(len(circles)) + " circles", (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 0))
 
     cv2.imshow(win_name, resizedResult)
 
@@ -179,10 +221,12 @@ while alive:
         image_filter = STATUS_TEXT
     elif key == ord('P') or key == ord('p'):
         image_filter = PREVIEW
+    elif key == ord('Y') or key == ord('y'):
+        image_filter = TOP_TEXT
     elif key == ord('1'):
-        accumThresh -= 1
+        ttThresh -= 1
     elif key == ord('!'):
-        accumThresh += 1
+        ttThresh += 1
     elif key == ord('2'):
         uThresh -= 1
     elif key == ord('@'):
