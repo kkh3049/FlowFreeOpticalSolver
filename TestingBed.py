@@ -1,5 +1,6 @@
 #!/usr/bin/python
 import re
+from collections import defaultdict
 
 import cv2
 import sys
@@ -105,7 +106,7 @@ if len(sys.argv) > 1:
 image_filter = PREVIEW
 alive = True
 
-win_name = 'Camera Filters'
+win_name = 'Flow Solver'
 cv2.namedWindow(win_name, flags=cv2.WINDOW_KEEPRATIO | cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_EXPANDED)
 result = None
 
@@ -133,12 +134,6 @@ while alive:
 
     gridBounds = cv2.boundingRect(biggestContour)
     points = [gridBounds[0], gridBounds[1], gridBounds[0] + gridBounds[2], gridBounds[1] + gridBounds[3]]
-
-    contourImage = np.stack((canny,) * 3, axis=-1)
-    cv2.rectangle(contourImage, (points[0], points[1]),
-                  (points[2], points[3]), (0, 0, 255), 2)
-    if image_filter == GRID_BOUNDS:
-        result = contourImage
 
     textTop, textBottom = find_start_and_end_of_white(canny, gridBounds[1] - 1, searchReverse=True)
     statusLineImg = curFrame[textTop - 1:textBottom + 1, points[0]:points[2]]
@@ -173,19 +168,54 @@ while alive:
     if image_filter == TOP_TEXT:
         result = topTextImg
 
+    squareWidth = gridBounds
+    squares = []
+    contourImage = np.stack((canny,) * 3, axis=-1)
+    cv2.rectangle(contourImage, (points[0], points[1]),
+                  (points[2], points[3]), (0, 0, 255), 2)
+
+    if image_filter == GRID_BOUNDS:
+        result = contourImage
+
     gridArea = cv2.cvtColor(curFrame[points[1]:points[3], points[0]:points[2]], cv2.COLOR_BGR2GRAY)
     minRadius = min(gridBounds[2], gridBounds[3]) // 31
     maxRadius = minRadius * 32 // 9
     circles = cv2.HoughCircles(gridArea, cv2.HOUGH_GRADIENT, 1, minRadius * 2, param1=150, param2=accumThresh,
                                minRadius=minRadius,
                                maxRadius=maxRadius)
-    circles = circles[0]
+
+    circles = [[(int(circle[0] + gridBounds[0]), int(circle[1] + gridBounds[1])), int(circle[2])] for circle in
+               circles[0]]
+    assert len(circles) == (goalFlowCount * 2)
+
+    circles = [[circle[0], circle[1], curFrame[circle[0][1]][circle[0][0]]] for circle in circles]
+    circles = [[circle[0], circle[1], (int(circle[2][0]), int(circle[2][1]), int(circle[2][2]))] for circle in circles]
+    indexAndColors = [(idx, val[2]) for idx, val in enumerate(circles)]
+    circlesByColor = defaultdict(list)
+
+    for _ in range(goalFlowCount):
+        idx, color = indexAndColors[0]
+        closestIndex = min(range(len(indexAndColors)),
+                           key=lambda l_idx: 256 * 3 if l_idx == 0 else abs(
+                               indexAndColors[l_idx][1][0] - color[0]) + abs(
+                               indexAndColors[l_idx][1][1] - color[1]) + abs(indexAndColors[l_idx][1][2] - color[2]))
+        oIdx, oColor = indexAndColors[closestIndex]
+        avgColor = ((color[0] + oColor[0]) // 2, (color[1] + oColor[1]) // 2, (color[2] + oColor[2]) // 2)
+        circlesByColor[avgColor].append(circles[idx])
+        circlesByColor[avgColor].append(circles[oIdx])
+        indexAndColors.remove((idx, color))
+        indexAndColors.remove((oIdx, oColor))
+
+    assert len(circlesByColor) == goalFlowCount
+    for color, circleList in circlesByColor.items():
+        assert len(circleList) == 2
+
     circleImage = np.stack((canny,) * 3, axis=-1)
     for circle in circles:
-        cv2.circle(circleImage, (int(circle[0] + gridBounds[0]), int(circle[1] + gridBounds[1])), int(circle[2]),
-                   (0, 255, 255), 3)
-
-    assert len(circles) == (goalFlowCount * 2)
+        cv2.circle(circleImage, circle[0], circle[1],
+                   circle[2], 3)
+    for color, circleList in circlesByColor.items():
+        cv2.line(circleImage, circleList[0][0], circleList[1][0], color, thickness=3)
 
     if image_filter == CIRCLES:
         result = circleImage
@@ -204,7 +234,8 @@ while alive:
                     3,
                     (255, 0, 0))
     elif image_filter == CIRCLES:
-        cv2.putText(resizedResult, "found " + str(len(circles)) + " circles", (10, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 0))
+        cv2.putText(resizedResult, "found " + str(len(circles)) + " circles", (10, 50), cv2.FONT_HERSHEY_PLAIN, 3,
+                    (255, 0, 0))
 
     cv2.imshow(win_name, resizedResult)
 
