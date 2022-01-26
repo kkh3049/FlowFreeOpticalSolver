@@ -13,6 +13,7 @@ GRID_BOUNDS = 2
 CIRCLES = 3
 STATUS_TEXT = 4
 TOP_TEXT = 5
+DATA = 6
 
 
 def find_biggest_contour(contours):
@@ -118,123 +119,155 @@ sWindow = 3
 accumThresh = 35
 ttThresh = 50
 
+curFrame = frame.copy()
+
+canny = cv2.Canny(curFrame, 80, uThresh, apertureSize=sWindow)
+contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+biggestContourIndex, biggestContour = find_biggest_contour(contours)
+cv2.drawContours(canny, contours, -1, (255, 255, 255), 3)
+contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+biggestContourIndex, biggestContour = find_biggest_contour(contours)
+
+gridBounds = cv2.boundingRect(biggestContour)
+gridCorners = [gridBounds[0], gridBounds[1], gridBounds[0] + gridBounds[2], gridBounds[1] + gridBounds[3]]
+
+textTop, textBottom = find_start_and_end_of_white(canny, gridBounds[1] - 1, searchReverse=True)
+statusLineImg = curFrame[textTop - 1:textBottom + 1, gridCorners[0]:gridCorners[2]]
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+tessConfig = "-l eng --oem 1 --psm 7"
+statusText = pytesseract.image_to_string(statusLineImg, config=tessConfig)
+match = re.search(r'flows:\s*([0-9]+)/\s*([0-9]+)\s', statusText)
+
+curFlowCount = int(match.group(1))
+goalFlowCount = int(match.group(2))
+
+topTextTop, topTextBottom = find_start_and_end_of_white(canny, 0)
+topTextImg = curFrame[topTextTop - 1:topTextBottom + 1, gridCorners[0]:gridCorners[2]]
+leftCircleLeft, leftCircleRight = find_start_and_end_of_white(topTextImg, 0, searchRows=False)
+rightCircleLeft, rightCircleRight = find_start_and_end_of_white(topTextImg, topTextImg.shape[1] - 1,
+                                                                searchReverse=True,
+                                                                searchRows=False)
+topTextImg = topTextImg[:, leftCircleRight + 5:rightCircleLeft - 5]
+topTextImg = cv2.cvtColor(topTextImg, cv2.COLOR_BGR2GRAY)
+thresh, topTextImg = cv2.threshold(topTextImg, ttThresh, 255, cv2.THRESH_BINARY)
+tessConfig = "-l eng --oem 1 --psm 13"
+topText = pytesseract.image_to_string(topTextImg, config=tessConfig)
+match = re.search(r'level\s*([0-9]+)\s*([0-9]+)x([0-9]+)', topText)
+
+curLevel = int(match.group(1))
+curLevelWidth = int(match.group(2))
+curLevelHeight = int(match.group(3))
+
+squareWidth = gridBounds[2] / curLevelWidth
+squareHeight = gridBounds[3] / curLevelHeight
+squareCenters = [[(int(gridBounds[0] + (x + 0.5) * squareWidth), int(gridBounds[1] + (y + 0.5) * squareHeight)) for x in
+                  range(curLevelWidth)] for y in range(curLevelHeight)]
+contourImage = np.stack((canny,) * 3, axis=-1)
+
+for row in squareCenters:
+    for squareCenter in row:
+        cv2.rectangle(contourImage,
+                      (int(squareCenter[0] - squareWidth * 0.5), int(squareCenter[1] - squareHeight * 0.5)), (
+                          int(squareCenter[0] + squareWidth * 0.5), int(squareCenter[1] + squareWidth * 0.5)),
+                      (0, 0,
+                       255), 3)
+        cv2.circle(contourImage, (int(squareCenter[0]), int(squareCenter[1])), 5, (0, 255, 255), -1)
+
+gridArea = cv2.cvtColor(curFrame[gridCorners[1]:gridCorners[3], gridCorners[0]:gridCorners[2]], cv2.COLOR_BGR2GRAY)
+minRadius = min(gridBounds[2], gridBounds[3]) // 31
+maxRadius = minRadius * 32 // 9
+circles = cv2.HoughCircles(gridArea, cv2.HOUGH_GRADIENT, 1, minRadius * 2, param1=150, param2=accumThresh,
+                           minRadius=minRadius,
+                           maxRadius=maxRadius)
+
+circles = [[(int(circle[0] + gridBounds[0]), int(circle[1] + gridBounds[1])), int(circle[2])] for circle in
+           circles[0]]
+assert len(circles) == (goalFlowCount * 2)
+
+circles = [[circle[0], circle[1], curFrame[circle[0][1]][circle[0][0]]] for circle in circles]
+circles = [[circle[0], circle[1], (int(circle[2][0]), int(circle[2][1]), int(circle[2][2]))] for circle in circles]
+indexAndColors = [(idx, val[2]) for idx, val in enumerate(circles)]
+colorIndexToCircleIndices = defaultdict(list)
+colors = []
+
+for _ in range(goalFlowCount):
+    idx, color = indexAndColors[0]
+    closestIndex = min(range(len(indexAndColors)),
+                       key=lambda l_idx: 256 * 3 if l_idx == 0 else abs(
+                           indexAndColors[l_idx][1][0] - color[0]) + abs(
+                           indexAndColors[l_idx][1][1] - color[1]) + abs(indexAndColors[l_idx][1][2] - color[2]))
+    oIdx, oColor = indexAndColors[closestIndex]
+    avgColor = ((color[0] + oColor[0]) // 2, (color[1] + oColor[1]) // 2, (color[2] + oColor[2]) // 2)
+    colorIndexToCircleIndices[len(colors)].append(idx)
+    colorIndexToCircleIndices[len(colors)].append(oIdx)
+    colors.append(avgColor)
+    indexAndColors.remove((idx, color))
+    indexAndColors.remove((oIdx, oColor))
+
+assert len(colorIndexToCircleIndices) == goalFlowCount
+for color, circleIndices in colorIndexToCircleIndices.items():
+    assert len(circleIndices) == 2
+
+circleImage = np.stack((canny,) * 3, axis=-1)
+for circle in circles:
+    cv2.circle(circleImage, circle[0], circle[1],
+               circle[2], 3)
+for color, circleIndices in colorIndexToCircleIndices.items():
+    cv2.line(circleImage, circles[circleIndices[0]][0], circles[circleIndices[1]][0], color, thickness=3)
+
+circleSquareIndices = [
+    (int((circle[0][0] - gridBounds[0]) / squareWidth), int((circle[0][1] - gridBounds[1]) / squareHeight)) for
+    circle in circles]
+
+gridData = [[(-1, False) for square in row] for row in squareCenters]
+for colorIdx, circleIndices in colorIndexToCircleIndices.items():
+    for circleIndex in circleIndices:
+        xCircle, yCircle = circleSquareIndices[circleIndex]
+        gridData[xCircle][yCircle] = (colorIdx, True)
+
+startingDataImage = np.zeros(curFrame.shape, np.uint8)
+for y, row in enumerate(gridData):
+    for x, (squareColorIndex, squareIsCircle) in enumerate(row):
+        if squareIsCircle:
+            assert squareColorIndex >= 0
+            cv2.circle(startingDataImage, squareCenters[x][y], minRadius, colors[squareColorIndex], -1)
+        cv2.circle(startingDataImage, squareCenters[x][y], 10, (0, 255, 255), -1)
+for colorIndex, circleIndices in colorIndexToCircleIndices.items():
+    circleCenters = [squareCenters[circleSquareIndices[index][1]][circleSquareIndices[index][0]] for index in
+                     circleIndices]
+    cv2.line(startingDataImage, circleCenters[0], circleCenters[1], colors[colorIndex], 3)
+
 while alive:
-    curFrame = frame.copy()
-
     if image_filter == PREVIEW:
-        result = curFrame
-    canny = cv2.Canny(curFrame, 80, uThresh, apertureSize=sWindow)
+        result = curFrame.copy()
     if image_filter == CANNY:
-        result = canny
-    contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    biggestContourIndex, biggestContour = find_biggest_contour(contours)
-    cv2.drawContours(canny, contours, -1, (255, 255, 255), 3)
-    contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    biggestContourIndex, biggestContour = find_biggest_contour(contours)
-
-    gridBounds = cv2.boundingRect(biggestContour)
-    points = [gridBounds[0], gridBounds[1], gridBounds[0] + gridBounds[2], gridBounds[1] + gridBounds[3]]
-
-    textTop, textBottom = find_start_and_end_of_white(canny, gridBounds[1] - 1, searchReverse=True)
-    statusLineImg = curFrame[textTop - 1:textBottom + 1, points[0]:points[2]]
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    tessConfig = "-l eng --oem 1 --psm 7"
-    statusText = pytesseract.image_to_string(statusLineImg, config=tessConfig)
-    match = re.search(r'flows:\s*([0-9]+)/\s*([0-9]+)\s', statusText)
-
-    curFlowCount = int(match.group(1))
-    goalFlowCount = int(match.group(2))
-
-    if image_filter == STATUS_TEXT:
-        result = statusLineImg
-
-    topTextTop, topTextBottom = find_start_and_end_of_white(canny, 0)
-    topTextImg = curFrame[topTextTop - 1:topTextBottom + 1, points[0]:points[2]]
-    leftCircleLeft, leftCircleRight = find_start_and_end_of_white(topTextImg, 0, searchRows=False)
-    rightCircleLeft, rightCircleRight = find_start_and_end_of_white(topTextImg, topTextImg.shape[1] - 1,
-                                                                    searchReverse=True,
-                                                                    searchRows=False)
-    topTextImg = topTextImg[:, leftCircleRight + 5:rightCircleLeft - 5]
-    topTextImg = cv2.cvtColor(topTextImg, cv2.COLOR_BGR2GRAY)
-    thresh, topTextImg = cv2.threshold(topTextImg, ttThresh, 255, cv2.THRESH_BINARY)
-    tessConfig = "-l eng --oem 1 --psm 13"
-    topText = pytesseract.image_to_string(topTextImg, config=tessConfig)
-    match = re.search(r'level\s*([0-9]+)\s*([0-9]+)x([0-9]+)', topText)
-
-    curLevel = int(match.group(1))
-    curLevelWidth = int(match.group(2))
-    curLevelHeight = int(match.group(3))
-
-    if image_filter == TOP_TEXT:
-        result = topTextImg
-
-    squareWidth = gridBounds
-    squares = []
-    contourImage = np.stack((canny,) * 3, axis=-1)
-    cv2.rectangle(contourImage, (points[0], points[1]),
-                  (points[2], points[3]), (0, 0, 255), 2)
-
+        result = canny.copy()
     if image_filter == GRID_BOUNDS:
-        result = contourImage
-
-    gridArea = cv2.cvtColor(curFrame[points[1]:points[3], points[0]:points[2]], cv2.COLOR_BGR2GRAY)
-    minRadius = min(gridBounds[2], gridBounds[3]) // 31
-    maxRadius = minRadius * 32 // 9
-    circles = cv2.HoughCircles(gridArea, cv2.HOUGH_GRADIENT, 1, minRadius * 2, param1=150, param2=accumThresh,
-                               minRadius=minRadius,
-                               maxRadius=maxRadius)
-
-    circles = [[(int(circle[0] + gridBounds[0]), int(circle[1] + gridBounds[1])), int(circle[2])] for circle in
-               circles[0]]
-    assert len(circles) == (goalFlowCount * 2)
-
-    circles = [[circle[0], circle[1], curFrame[circle[0][1]][circle[0][0]]] for circle in circles]
-    circles = [[circle[0], circle[1], (int(circle[2][0]), int(circle[2][1]), int(circle[2][2]))] for circle in circles]
-    indexAndColors = [(idx, val[2]) for idx, val in enumerate(circles)]
-    circlesByColor = defaultdict(list)
-
-    for _ in range(goalFlowCount):
-        idx, color = indexAndColors[0]
-        closestIndex = min(range(len(indexAndColors)),
-                           key=lambda l_idx: 256 * 3 if l_idx == 0 else abs(
-                               indexAndColors[l_idx][1][0] - color[0]) + abs(
-                               indexAndColors[l_idx][1][1] - color[1]) + abs(indexAndColors[l_idx][1][2] - color[2]))
-        oIdx, oColor = indexAndColors[closestIndex]
-        avgColor = ((color[0] + oColor[0]) // 2, (color[1] + oColor[1]) // 2, (color[2] + oColor[2]) // 2)
-        circlesByColor[avgColor].append(circles[idx])
-        circlesByColor[avgColor].append(circles[oIdx])
-        indexAndColors.remove((idx, color))
-        indexAndColors.remove((oIdx, oColor))
-
-    assert len(circlesByColor) == goalFlowCount
-    for color, circleList in circlesByColor.items():
-        assert len(circleList) == 2
-
-    circleImage = np.stack((canny,) * 3, axis=-1)
-    for circle in circles:
-        cv2.circle(circleImage, circle[0], circle[1],
-                   circle[2], 3)
-    for color, circleList in circlesByColor.items():
-        cv2.line(circleImage, circleList[0][0], circleList[1][0], color, thickness=3)
-
+        result = contourImage.copy()
     if image_filter == CIRCLES:
-        result = circleImage
+        result = circleImage.copy()
+    if image_filter == STATUS_TEXT:
+        result = statusLineImg.copy()
+    if image_filter == TOP_TEXT:
+        result = topTextImg.copy()
+    if image_filter == DATA:
+        result = startingDataImage
 
     winRect = cv2.getWindowImageRect(win_name)
     resizedResult = resize_and_pad(result, (winRect[2], winRect[3]))
     if image_filter == STATUS_TEXT:
         cv2.putText(resizedResult, "flows:" + str(curFlowCount) + "/" + str(goalFlowCount), (10, 50),
                     cv2.FONT_HERSHEY_PLAIN,
-                    3,
+                    5,
                     (255, 0, 0))
     elif image_filter == TOP_TEXT:
         cv2.putText(resizedResult, "level " + str(curLevel) + ": " + str(curLevelWidth) + "x" + str(curLevelHeight),
                     (10, 50),
                     cv2.FONT_HERSHEY_PLAIN,
-                    3,
+                    5,
                     (255, 0, 0))
     elif image_filter == CIRCLES:
-        cv2.putText(resizedResult, "found " + str(len(circles)) + " circles", (10, 50), cv2.FONT_HERSHEY_PLAIN, 3,
+        cv2.putText(resizedResult, "found " + str(len(circles)) + " circles", (10, 50), cv2.FONT_HERSHEY_PLAIN, 5,
                     (255, 0, 0))
 
     cv2.imshow(win_name, resizedResult)
@@ -242,30 +275,20 @@ while alive:
     key = cv2.waitKey(1)
     if key == ord('Q') or key == ord('q') or key == 27:
         alive = False
-    elif key == ord('C') or key == ord('c'):
-        image_filter = CANNY
-    elif key == ord('G') or key == ord('g'):
-        image_filter = GRID_BOUNDS
-    elif key == ord('Z') or key == ord('z'):
-        image_filter = CIRCLES
-    elif key == ord('T') or key == ord('t'):
-        image_filter = STATUS_TEXT
-    elif key == ord('P') or key == ord('p'):
+    elif key == ord('P') or key == ord('p') or key == ord('0'):
         image_filter = PREVIEW
-    elif key == ord('Y') or key == ord('y'):
+    elif key == ord('C') or key == ord('c') or key == ord('1'):
+        image_filter = CANNY
+    elif key == ord('G') or key == ord('g') or key == ord('2'):
+        image_filter = GRID_BOUNDS
+    elif key == ord('Z') or key == ord('z') or key == ord('3'):
+        image_filter = CIRCLES
+    elif key == ord('T') or key == ord('t') or key == ord('4'):
+        image_filter = STATUS_TEXT
+    elif key == ord('Y') or key == ord('y') or key == ord('5'):
         image_filter = TOP_TEXT
-    elif key == ord('1'):
-        ttThresh -= 1
-    elif key == ord('!'):
-        ttThresh += 1
-    elif key == ord('2'):
-        uThresh -= 1
-    elif key == ord('@'):
-        uThresh += 1
-    elif key == ord('3'):
-        sWindow -= 2
-    elif key == ord('#'):
-        sWindow += 2
+    elif key == ord('D') or key == ord('d') or key == ord('6'):
+        image_filter = DATA
 
 source.release()
 cv2.destroyWindow(win_name)
