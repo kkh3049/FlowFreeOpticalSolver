@@ -14,14 +14,19 @@ def ConvertToMZuckForm(board):
     return mzBoard
 
 
-def ConvertFromMZuckDecoded(mzDecoded):
+def ConvertFromMZuckDecoded(mzDecoded, originalBoard):
+    mzColorToOurColor = {}
     ourBoard = []
     for x in range(len(mzDecoded[0])):
         ourCol = []
         for y in range(len(mzDecoded)):
             mzColor, mzJunction = mzDecoded[y][x]
-            ourCol.append((mzColor, mzJunction < 0))
+            isCircle = mzJunction < 0
+            ourCol.append((mzColor, isCircle))
+            if isCircle:
+                mzColorToOurColor[mzColor] = originalBoard[x][y][0]
         ourBoard.append(ourCol)
+    ourBoard = [[(mzColorToOurColor[mzColor], isCircle) for mzColor, isCircle in ourCol] for ourCol in ourBoard]
     return ourBoard
 
 
@@ -62,7 +67,7 @@ def Solve(board):
     sol, decoded, repairs, solve_time = mzf.solve_sat(options, puzzle, colors,
                                                       color_var, dir_vars, clauses)
     total_time = reduce_time + solve_time
-    ourBoard = ConvertFromMZuckDecoded(decoded)
+    ourBoard = ConvertFromMZuckDecoded(decoded, board)
     paths = DetectPaths(ourBoard, len(colors))
     return ourBoard, paths
 

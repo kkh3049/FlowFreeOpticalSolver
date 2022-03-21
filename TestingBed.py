@@ -1,6 +1,7 @@
 #!/usr/bin/python
 import re
 from collections import defaultdict
+from itertools import tee, islice, chain
 
 import cv2
 import sys
@@ -16,7 +17,12 @@ CIRCLES = 3
 STATUS_TEXT = 4
 TOP_TEXT = 5
 DATA = 6
+SOLVED = 7
 
+def iterate_with_next(iterable):
+    items, nexts = tee(iterable, 2)
+    nexts = chain(islice(nexts, 1, None), [None])
+    return zip(items, nexts)
 
 def find_biggest_contour(contours):
     maxArea = 0
@@ -241,6 +247,18 @@ for colorIndex, circleIndices in colorIndexToCircleIndices.items():
 
 solvedBoard, solvedPaths = FlowSolver.Solve(gridData)
 
+solvedImage = curFrame.copy();
+for colorIndex, path in enumerate(solvedPaths):
+    color = colors[colorIndex]
+    for cur, next in iterate_with_next(path):
+        if next is None:
+            continue
+        startPoint = squareCenters[cur[1]][cur[0]]
+        endPoint = squareCenters[next[1]][next[0]]
+        cv2.line(solvedImage, startPoint, endPoint, color, 40)
+
+
+
 while alive:
     if image_filter == PREVIEW:
         result = curFrame.copy()
@@ -256,6 +274,8 @@ while alive:
         result = topTextImg.copy()
     if image_filter == DATA:
         result = startingDataImage
+    if image_filter == SOLVED:
+        result = solvedImage
 
     winRect = cv2.getWindowImageRect(win_name)
     resizedResult = resize_and_pad(result, (winRect[2], winRect[3]))
@@ -297,6 +317,8 @@ while alive:
         image_filter = TOP_TEXT
     elif key == ord('D') or key == ord('d') or key == ord('6'):
         image_filter = DATA
+    elif key == ord('S') or key == ord('s') or key == ord('7'):
+        image_filter = SOLVED
 
 source.release()
 cv2.destroyWindow(win_name)
