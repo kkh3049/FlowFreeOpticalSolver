@@ -7,6 +7,8 @@ import sys
 import numpy as np
 import pytesseract
 
+import FlowSolver
+
 PREVIEW = 0
 CANNY = 1
 GRID_BOUNDS = 2
@@ -212,8 +214,8 @@ circleImage = np.stack((canny,) * 3, axis=-1)
 for circle in circles:
     cv2.circle(circleImage, circle[0], circle[1],
                circle[2], 3)
-for color, circleIndices in colorIndexToCircleIndices.items():
-    cv2.line(circleImage, circles[circleIndices[0]][0], circles[circleIndices[1]][0], color, thickness=3)
+for colorIdx, circleIndices in colorIndexToCircleIndices.items():
+    cv2.line(circleImage, circles[circleIndices[0]][0], circles[circleIndices[1]][0], colors[colorIdx], thickness=3)
 
 circleSquareIndices = [
     (int((circle[0][0] - gridBounds[0]) / squareWidth), int((circle[0][1] - gridBounds[1]) / squareHeight)) for
@@ -237,6 +239,8 @@ for colorIndex, circleIndices in colorIndexToCircleIndices.items():
                      circleIndices]
     cv2.line(startingDataImage, circleCenters[0], circleCenters[1], colors[colorIndex], 3)
 
+solvedBoard, solvedPaths = FlowSolver.Solve(gridData)
+
 while alive:
     if image_filter == PREVIEW:
         result = curFrame.copy()
@@ -256,18 +260,22 @@ while alive:
     winRect = cv2.getWindowImageRect(win_name)
     resizedResult = resize_and_pad(result, (winRect[2], winRect[3]))
     if image_filter == STATUS_TEXT:
-        cv2.putText(resizedResult, "flows:" + str(curFlowCount) + "/" + str(goalFlowCount), (10, 50),
-                    cv2.FONT_HERSHEY_PLAIN,
-                    5,
+        cv2.putText(resizedResult, "flows:" + str(curFlowCount) + "/" + str(goalFlowCount),
+                    (10, 120),
+                    cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                    2,
                     (255, 0, 0))
     elif image_filter == TOP_TEXT:
         cv2.putText(resizedResult, "level " + str(curLevel) + ": " + str(curLevelWidth) + "x" + str(curLevelHeight),
-                    (10, 50),
-                    cv2.FONT_HERSHEY_PLAIN,
-                    5,
+                    (10, 120),
+                    cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                    2,
                     (255, 0, 0))
     elif image_filter == CIRCLES:
-        cv2.putText(resizedResult, "found " + str(len(circles)) + " circles", (10, 50), cv2.FONT_HERSHEY_PLAIN, 5,
+        cv2.putText(resizedResult, "found " + str(len(circles)) + " circles",
+                    (10, 120),
+                    cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                    2,
                     (255, 0, 0))
 
     cv2.imshow(win_name, resizedResult)
